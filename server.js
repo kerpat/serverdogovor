@@ -73,15 +73,15 @@ async function handleGetPendingContracts({ userId }) {
     const supabaseAdmin = createSupabaseAdmin();
     const { data, error } = await supabaseAdmin
         .from('rentals')
-        .select('id, status, bike_id, tariffs(title), bikes(*)')
+        .select('id, status, bike_id, tariffs(title), bikes(*), extra_data')
         .eq('user_id', userId)
-        .eq('status', 'awaiting_contract_signing');
+        .in('status', ['awaiting_contract_signing', 'awaiting_return_signature']);
 
     if (error) {
-        throw new Error('Failed to fetch pending contracts: ' + error.message);
+        throw new Error('Failed to fetch pending notifications: ' + error.message);
     }
 
-    return { status: 200, body: { rentals: data } };
+    return { status: 200, body: { notifications: data || [] } };
 }
 
 async function handleGetContractDetails({ userId, rentalId }) {
@@ -260,6 +260,70 @@ async function handleConfirmContract({ userId, rentalId, signatureData }) {
     }
 }
 
+async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
+    if (!userId || !rentalId || !signatureData) {
+        return { status: 400, body: { error: 'userId, rentalId, and signatureData are required.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+    let browser = null;
+
+    try {
+        const { data: rentalData, error: rentalError } = await supabaseAdmin
+            .from('rentals')
+            .select('extra_data, clients ( name, city ), bikes ( * )')
+            .eq('id', rentalId)
+            .eq('user_id', userId)
+            .single();
+
+        if (rentalError) throw new Error('Failed to fetch rental data for Return Act signing: ' + rentalError.message);
+
+        const defects = rentalData.extra_data?.defects || [];
+        
+        const fullHTML = generateReturnActHTML(rentalData, defects, signatureData);
+
+        browser = await playwright.chromium.launch();
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.setContent(fullHTML, { waitUntil: 'load' });
+        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+
+        const filePath = `returns/${userId}/return_act_${rentalId}_signed.pdf`;
+        const { error: uploadError } = await supabaseAdmin.storage
+            .from('contracts')
+            .upload(filePath, pdfBuffer, {
+                contentType: 'application/pdf',
+                upsert: true
+            });
+
+        if (uploadError) throw new Error('Failed to save signed Return Act PDF: ' + uploadError.message);
+
+        const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
+
+        const newExtraData = { ...rentalData.extra_data, return_act_url: publicUrl };
+
+        const { error: updateError } = await supabaseAdmin
+            .from('rentals')
+            .update({
+                status: 'completed',
+                extra_data: newExtraData
+            })
+            .eq('id', rentalId);
+
+        if (updateError) throw new Error('Failed to finalize rental after signing return act: ' + updateError.message);
+
+        return { status: 200, body: { message: 'Return act signed successfully.' } };
+
+    } catch (error) {
+        console.error('Return Act confirmation error:', error);
+        return { status: 500, body: { error: 'Не удалось подписать акт сдачи: ' + error.message } };
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+    }
+}
+
 async function handleGetPaymentMethod({ userId }) {
     if (!userId) {
         return { status: 400, body: { error: 'userId is required.' } };
@@ -282,7 +346,7 @@ async function handleGetPaymentMethod({ userId }) {
     return { status: 200, body: { payment_method: paymentMethodDetails } };
 }
 
-function generateReturnActHTML(rentalData, defects = []) {
+function generateReturnActHTML(rentalData, defects = [], clientSignatureData = null) {
     const client = rentalData.clients;
     const bike = rentalData.bikes;
     const now = new Date();
@@ -299,6 +363,10 @@ function generateReturnActHTML(rentalData, defects = []) {
         </ul>
         `
         : '<p style="font-size: 0.9em; margin-top: 20px;">Неисправности на момент сдачи не выявлены.</p>';
+    
+    const clientSignatureHTML = clientSignatureData
+        ? `<img src="${clientSignatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>`
+        : '';
 
     return `
         <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
@@ -335,7 +403,10 @@ function generateReturnActHTML(rentalData, defects = []) {
                 <tr style="vertical-align: bottom;">
                     <td style="width: 50%; padding-right: 20px; border: none;">
                         <p>Арендатор технику и оборудование передал.</p>
-                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                        <div style="position: relative; height: 100px; text-align: left;">
+                            ${clientSignatureHTML}
+                            <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
+                        </div>
                         <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
                     </td>
                     <td style="width: 50%; padding-left: 20px; border: none;">
@@ -429,6 +500,9 @@ app.post('/api/user', async (req, res) => {
                 break;
             case 'generate-return-act':
                 result = await handleGenerateReturnAct(body);
+                break;
+            case 'confirm-return-act':
+                result = await handleConfirmReturnAct(body);
                 break;
             default:
                 result = { status: 400, body: { error: 'Invalid action' } };
