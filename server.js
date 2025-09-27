@@ -238,11 +238,19 @@ async function handleConfirmContract({ userId, rentalId, signatureData }) {
 
         const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
 
+        // Получаем текущие extra_data, чтобы не затереть их
+        const { data: currentRental, error: fetchError } = await supabaseAdmin
+            .from('rentals').select('extra_data').eq('id', rentalId).single();
+        if (fetchError) throw new Error('Failed to get current rental data: ' + fetchError.message);
+
+        const extraData = currentRental.extra_data || {};
+        extraData.contract_document_url = publicUrl; // Добавляем новую ссылку
+
         const { error: updateError } = await supabaseAdmin
             .from('rentals')
             .update({
                 status: 'active',
-                extra_data: { contract_document_url: publicUrl }
+                extra_data: extraData // Сохраняем обновленный объект
             })
             .eq('id', rentalId)
             .eq('user_id', userId);
@@ -308,10 +316,55 @@ function generateReturnActHTML(rentalData, defects = [], clientSignatureData = n
         `
         : '';
 
+    // --- ИСПРАВЛЕННЫЙ БЛОК ПОДПИСИ ---
     const clientSignatureHTML = clientSignatureData
-        ? `<img src="${clientSignatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>`
+        ? `<img src="${clientSignatureData}" alt="Подпись" style="width: 150px; height: auto; margin-bottom: -40px;"/>`
         : '';
 
+    // HTML для тела документа (без шапки)
+    const bodyHTML = `
+        <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
+            Акт приема-передачи (возврата)<br>
+            (Приложение №2 к Договору проката)
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9em;">
+            <span>г. ${client?.city || 'Москва'}</span>
+            <span>${now.toLocaleDateString('ru-RU')}</span>
+        </div>
+        <h4 style="margin-top: 20px; margin-bottom: 10px;">1. Оборудование</h4>
+        <table>
+            <tbody>
+                <tr><th>Наименование</th><td>${bike?.model_name || 'N/A'}</td></tr>
+                <tr><th>Номер рамы</th><td>${bike?.frame_number || 'N/A'}</td></tr>
+                <tr><th>Номера аккумуляторов</th><td>${batteryNumbers}</td></tr>
+                <tr><th>Рег. номер</th><td>${bike?.registration_number || 'N/A'}</td></tr>
+                <tr><th>Номер IOT</th><td>${bike?.iot_device_id || 'N/A'}</td></tr>
+                <tr><th>Доп. оборудование</th><td>${bike?.additional_equipment || 'N/A'}</td></tr>
+            </tbody>
+        </table>
+
+        ${defectsHTML}
+        ${amountHTML}
+
+        <h4 style="margin-top: 40px; margin-bottom: 10px;">Подписи сторон</h4>
+        <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
+            <tr style="vertical-align: bottom;">
+                <td style="width: 50%; padding-right: 20px; border: none;">
+                    <p>Арендатор технику и оборудование передал.</p>
+                    ${clientSignatureHTML}
+                    <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                    <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
+                </td>
+                <td style="width: 50%; padding-left: 20px; border: none;">
+                    <p>Арендодатель технику и оборудование получил.</p>
+                    <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                    <p style="font-size: 0.8em;">(ФИО: ________________)</p>
+                </td>
+            </tr>
+        </table>
+    `;
+
+    // Оборачиваем в полный HTML с правильными стилями
     return `
         <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
         body { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 1.4; color: #333; }
@@ -319,49 +372,7 @@ function generateReturnActHTML(rentalData, defects = [], clientSignatureData = n
         th, td { border: 1px solid #ccc; padding: 8px; }
         th { background-color: #f2f2f2; font-weight: bold; width: 40%; }
         h2, h4 { text-align: center; }
-        </style></head><body>
-            <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
-                Акт приема-передачи (возврата)<br>
-                (Приложение №2 к Договору проката)
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9em;">
-                <span>г. ${client?.city || 'Москва'}</span>
-                <span>${now.toLocaleDateString('ru-RU')}</span>
-            </div>
-            <h4 style="margin-top: 20px; margin-bottom: 10px;">1. Оборудование</h4>
-            <table>
-                <tbody>
-                    <tr><th>Наименование</th><td>${bike?.model_name || 'N/A'}</td></tr>
-                    <tr><th>Номер рамы</th><td>${bike?.frame_number || 'N/A'}</td></tr>
-                    <tr><th>Номера аккумуляторов</th><td>${batteryNumbers}</td></tr>
-                    <tr><th>Рег. номер</th><td>${bike?.registration_number || 'N/A'}</td></tr>
-                    <tr><th>Номер IOT</th><td>${bike?.iot_device_id || 'N/A'}</td></tr>
-                    <tr><th>Доп. оборудование</th><td>${bike?.additional_equipment || 'N/A'}</td></tr>
-                </tbody>
-            </table>
-            
-            ${defectsHTML}
-            ${amountHTML}
-
-            <h4 style="margin-top: 40px; margin-bottom: 10px;">Подписи сторон</h4>
-            <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
-                <tr style="vertical-align: bottom;">
-                    <td style="width: 50%; padding-right: 20px; border: none;">
-                        <p>Арендатор технику и оборудование передал.</p>
-                        <div style="position: relative; height: 100px; text-align: left;">
-                            ${clientSignatureHTML}
-                            <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
-                        </div>
-                        <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
-                    </td>
-                    <td style="width: 50%; padding-left: 20px; border: none;">
-                        <p>Арендодатель технику и оборудование получил.</p>
-                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
-                        <p style="font-size: 0.8em;">(ФИО: ________________)</p>
-                    </td>
-                </tr>
-            </table>
-        </body></html>
+        </style></head><body>${bodyHTML}</body></html>
     `;
 }
 
@@ -459,13 +470,19 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
 
         const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
 
-        const newExtraData = { ...rentalData.extra_data, return_act_url: publicUrl };
+        // Получаем текущие extra_data
+        const { data: currentRental, error: fetchError } = await supabaseAdmin
+            .from('rentals').select('extra_data').eq('id', rentalId).single();
+        if (fetchError) throw new Error('Failed to get current rental data: ' + fetchError.message);
+
+        const extraData = currentRental.extra_data || {};
+        extraData.return_act_url = publicUrl; // Добавляем ссылку на акт сдачи
 
         const { error: updateError } = await supabaseAdmin
             .from('rentals')
             .update({
                 status: 'completed',
-                extra_data: newExtraData
+                extra_data: extraData // Сохраняем
             })
             .eq('id', rentalId);
 
