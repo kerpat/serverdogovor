@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.41.0",
+    "cors": "^2.8.5",
     "express": "^4.19.2",
     "node-fetch": "^2.6.7",
     "playwright": "^1.44.0"
