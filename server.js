@@ -207,9 +207,14 @@ async function handleConfirmContract({ userId, rentalId, signatureData }) {
             h2, h4 { text-align: center; }
             </style></head><body>
                 ${contractBodyHTML}
-                <div style="margin-top: 30px; page-break-inside: avoid;">
-                    <h4>Подпись Арендатора:</h4>
-                    <img src="${signatureData}" alt="Подпись" style="width: 180px; height: auto;"/>
+                <div style="margin-top: 50px; page-break-inside: avoid; width: 400px;">
+                    <div style="position: relative; height: 100px; text-align: left;">
+                        <img src="${signatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>
+                        <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
+                    </div>
+                    <div style="text-align: right; font-size: 11px; color: #555;">
+                        (Подпись Арендатора)
+                    </div>
                 </div>
             </body></html>
         `;
