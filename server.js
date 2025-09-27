@@ -29,6 +29,55 @@ function parseRequestBody(body) {
     }
     return body;
 }
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // Загружаем токен из переменных окружения
+
+/**
+ * Отправляет уведомление в Telegram с кнопкой-ссылкой на Web App.
+ * @param {string} chatId - ID чата с пользователем (его telegram_user_id).
+ * @param {string} text - Текст сообщения.
+ * @param {string} webAppUrl - Ссылка на Web App для кнопки.
+ */
+async function sendTelegramNotification(chatId, text, webAppUrl) {
+    if (!BOT_TOKEN) {
+        console.error('Ошибка: TELEGRAM_BOT_TOKEN не установлен. Уведомление не отправлено.');
+        return;
+    }
+    if (!chatId) {
+        console.warn('Предупреждение: telegram_user_id для клиента не найден. Уведомление не отправлено.');
+        return;
+    }
+
+    const apiUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const payload = {
+        chat_id: chatId,
+        text: text,
+        parse_mode: 'HTML', // Разрешаем использовать HTML-теги для форматирования
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: '✍️ Открыть уведомления', // Текст на кнопке
+                        web_app: { url: webAppUrl } // Ссылка, которую откроет кнопка
+                    }
+                ]
+            ]
+        }
+    };
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            console.error('Ошибка отправки сообщения в Telegram:', result.description);
+        }
+    } catch (error) {
+        console.error('Сетевая ошибка при отправке сообщения в Telegram:', error);
+    }
+}
 
 async function handleUpdateLocation({ userId, latitude, longitude }) {
     if (!userId || typeof latitude !== 'number' || typeof longitude !== 'number') {
@@ -543,10 +592,10 @@ async function handleFinalizeReturn({ rental_id, new_bike_status, service_reason
 
     const supabaseAdmin = createSupabaseAdmin();
 
-    // 1. Получаем ID велосипеда из аренды
+    // 1. Получаем ID велосипеда и ID клиента в Telegram из аренды
     const { data: rentalData, error: rentalError } = await supabaseAdmin
         .from('rentals')
-        .select('bike_id, extra_data')
+        .select('bike_id, extra_data, clients ( telegram_user_id )') // <-- ИЗМЕНЕНИЕ: Запрашиваем telegram_user_id
         .eq('id', rental_id)
         .single();
 
@@ -554,6 +603,7 @@ async function handleFinalizeReturn({ rental_id, new_bike_status, service_reason
         throw new Error('Аренда не найдена: ' + (rentalError?.message || ''));
     }
     const bike_id = rentalData.bike_id;
+    const telegramUserId = rentalData.clients?.telegram_user_id; // <-- НОВОЕ: Получаем ID
 
     // 2. Обновляем статус аренды и добавляем данные в extra_data
     const extraData = rentalData.extra_data || {};
@@ -588,9 +638,59 @@ async function handleFinalizeReturn({ rental_id, new_bike_status, service_reason
         // Можно вернуть частичный успех, если это приемлемо
     }
 
+    // --- НОВЫЙ БЛОК: ОТПРАВКА УВЕДОМЛЕНИЯ В TELEGRAM ---
+    const messageText = 'Пожалуйста, подпишите акт сдачи электровелосипеда в личном кабинете, чтобы завершить аренду.';
+
+    // ВАЖНО: Замените YOUR_BOT_USERNAME и YOUR_WEBAPP_SHORT_NAME на свои значения
+    // Имя пользователя бота - это то, что вы задали в BotFather (например, MySuperBikeBot)
+    // Короткое имя Web App - это то, что вы задали для кнопки Menu (например, app)
+    const webAppUrl = 'https://t.me/YOUR_BOT_USERNAME/YOUR_WEBAPP_SHORT_NAME?startapp=notifications';
+
+    await sendTelegramNotification(telegramUserId, messageText, webAppUrl);
+    // --- КОНЕЦ НОВОГО БЛОКА ---
+
     return { status: 200, body: { message: 'Приемка оформлена, акт ожидает подписи клиента.' } };
 }
 
+// +++ ВСТАВИТЬ ЭТОТ БЛОК КОДА В server.js +++
+
+async function handleUnbindPaymentMethod({ userId }) {
+    if (!userId) {
+        return { status: 400, body: { error: 'userId is required.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+
+    // 1. Получаем текущие extra данные, чтобы не удалить ничего лишнего
+    const { data: client, error: fetchError } = await supabaseAdmin
+        .from('clients')
+        .select('extra')
+        .eq('id', userId)
+        .single();
+
+    if (fetchError) {
+        throw new Error('Не удалось найти клиента: ' + fetchError.message);
+    }
+
+    const extra = client.extra || {};
+    // 2. Удаляем ключ с деталями платежного метода из объекта
+    delete extra.payment_method_details;
+
+    // 3. Обновляем запись в базе: очищаем ID метода и обновляем extra
+    const { error: updateError } = await supabaseAdmin
+        .from('clients')
+        .update({
+            yookassa_payment_method_id: null,
+            extra: extra // Сохраняем объект extra без данных о карте
+        })
+        .eq('id', userId);
+
+    if (updateError) {
+        throw new Error('Ошибка при отвязке карты: ' + updateError.message);
+    }
+
+    return { status: 200, body: { message: 'Способ оплаты успешно отвязан.' } };
+}
 // НОВЫЙ ОБРАБОТЧИК ДЛЯ АДМИН-ПАНЕЛИ
 app.post('/api/admin', async (req, res) => {
     try {
@@ -646,6 +746,9 @@ app.post('/api/user', async (req, res) => {
                 break;
             case 'confirm-return-act':
                 result = await handleConfirmReturnAct(body);
+                break;
+            case 'unbind-payment-method':
+                result = await handleUnbindPaymentMethod(body);
                 break;
             default:
                 result = { status: 400, body: { error: 'Invalid action' } };
