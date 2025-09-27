@@ -1,5 +1,5 @@
 # Используем официальный образ Node.js с Playwright
-FROM mcr.microsoft.com/playwright/node:18-jammy
+FROM mcr.microsoft.com/playwright:v1.44.0-jammy
 
 # Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
