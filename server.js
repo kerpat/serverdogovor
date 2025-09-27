@@ -692,6 +692,61 @@ async function handleUnbindPaymentMethod({ userId }) {
     return { status: 200, body: { message: 'Способ оплаты успешно отвязан.' } };
 }
 // НОВЫЙ ОБРАБОТЧИК ДЛЯ АДМИН-ПАНЕЛИ
+// +++ ВСТАВИТЬ ЭТОТ БЛОК КОДА В server.js +++
+
+/**
+ * Устанавливает статус верификации для клиента и отправляет уведомление.
+ */
+async function handleSetVerificationStatus({ userId, status }) {
+    if (!userId || !status) {
+        return { status: 400, body: { error: 'userId и status обязательны.' } };
+    }
+    if (!['approved', 'rejected'].includes(status)) {
+        return { status: 400, body: { error: 'Недопустимый статус.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+
+    // 1. Обновляем статус клиента в базе
+    const { error: updateError } = await supabaseAdmin
+        .from('clients')
+        .update({ verification_status: status })
+        .eq('id', userId);
+
+    if (updateError) {
+        throw new Error('Не удалось обновить статус клиента: ' + updateError.message);
+    }
+
+    // 2. Получаем telegram_user_id для отправки сообщения
+    const { data: client, error: fetchError } = await supabaseAdmin
+        .from('clients')
+        .select('telegram_user_id, extra')
+        .eq('id', userId)
+        .single();
+
+    if (fetchError || !client) {
+        console.warn(`Не удалось найти клиента ${userId} для отправки уведомления.`);
+        return { status: 200, body: { message: 'Статус обновлен, но уведомление не отправлено (клиент не найден).' } };
+    }
+
+    // 3. Формируем текст сообщения и ссылку для Web App
+    let messageText = '';
+    const botUsername = 'pr1zmaticbot'; // <-- УКАЖИТЕ ИМЯ ВАШЕГО БОТА
+    const webAppName = 'app'; // <-- УКАЖИТЕ КОРОТКОЕ ИМЯ ВАШЕГО WEB APP
+    const webAppUrl = `https://t.me/${botUsername}/${webAppName}`;
+
+    if (status === 'approved') {
+        messageText = '✅ Поздравляем! Ваш аккаунт был подтвержден. Теперь вы можете полноценно пользоваться приложением.';
+    } else { // status === 'rejected'
+        messageText = '❌ К сожалению, в верификации было отказано. Для уточнения деталей свяжитесь с поддержкой.';
+    }
+
+    // 4. Отправляем уведомление
+    // (Убедитесь, что функция sendTelegramNotification уже есть в вашем файле)
+    await sendTelegramNotification(client.telegram_user_id, messageText, webAppUrl);
+
+    return { status: 200, body: { message: 'Статус успешно обновлен, уведомление отправлено.' } };
+}
 app.post('/api/admin', async (req, res) => {
     try {
         const body = req.body;
@@ -704,6 +759,9 @@ app.post('/api/admin', async (req, res) => {
                 break;
             // Здесь могут быть другие admin-действия в будущем
             default:
+            case 'set-verification-status':
+                result = await handleSetVerificationStatus(body);
+                break;
                 result = { status: 400, body: { error: 'Invalid admin action' } };
         }
         res.status(result.status).json(result.body);
