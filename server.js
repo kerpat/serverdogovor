@@ -521,22 +521,6 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
 
         if (updateError) throw new Error('Failed to finalize rental after signing return act: ' + updateError.message);
 
-        // ИЗМЕНЕНИЕ 2: Добавляем обновление статуса велосипеда
-        const bikeId = rentalData.bike_id;
-        if (!bikeId) {
-            console.error(`Warning: bike_id not found for rental ${rentalId}. Cannot update bike status.`);
-        } else {
-            const { error: bikeUpdateError } = await supabaseAdmin
-                .from('bikes')
-                .update({ status: 'maintenance' }) // Ставим статус "на обслуживании"
-                .eq('id', bikeId);
-
-            if (bikeUpdateError) {
-                // Не прерываем процесс, но логируем ошибку
-                console.error(`Failed to update bike status for bike_id ${bikeId}: ${bikeUpdateError.message}`);
-            }
-        }
-
         return { status: 200, body: { message: 'Return act signed successfully.' } };
 
     } catch (error) {
