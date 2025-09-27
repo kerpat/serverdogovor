@@ -549,6 +549,86 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
     }
 }
 
+async function handleFinalizeReturn({ rental_id, new_bike_status, service_reason, return_act_url, defects }) {
+    if (!rental_id || !new_bike_status) {
+        return { status: 400, body: { error: 'rental_id и new_bike_status обязательны.' } };
+    }
+    if (new_bike_status === 'in_service' && !service_reason) {
+        return { status: 400, body: { error: 'Причина ремонта обязательна, если велосипед отправляется в сервис.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+
+    // 1. Получаем ID велосипеда из аренды
+    const { data: rentalData, error: rentalError } = await supabaseAdmin
+        .from('rentals')
+        .select('bike_id, extra_data')
+        .eq('id', rental_id)
+        .single();
+
+    if (rentalError || !rentalData) {
+        throw new Error('Аренда не найдена: ' + (rentalError?.message || ''));
+    }
+    const bike_id = rentalData.bike_id;
+
+    // 2. Обновляем статус аренды и добавляем данные в extra_data
+    const extraData = rentalData.extra_data || {};
+    extraData.return_act_url = return_act_url;
+    extraData.defects = defects || [];
+
+    const { error: updateRentalError } = await supabaseAdmin
+        .from('rentals')
+        .update({ status: 'awaiting_return_signature', extra_data: extraData })
+        .eq('id', rental_id);
+
+    if (updateRentalError) {
+        throw new Error('Ошибка обновления статуса аренды: ' + updateRentalError.message);
+    }
+
+    // 3. Готовим данные для обновления велосипеда
+    const bikeUpdatePayload = {
+        status: new_bike_status,
+        // Если велосипед исправен, очищаем причину ремонта. Если в ремонт - записываем причину.
+        service_reason: new_bike_status === 'in_service' ? service_reason : null
+    };
+
+    // 4. Обновляем велосипед
+    const { error: updateBikeError } = await supabaseAdmin
+        .from('bikes')
+        .update(bikeUpdatePayload)
+        .eq('id', bike_id);
+
+    if (updateBikeError) {
+        // Не "ломаем" весь процесс, но сообщаем об ошибке
+        console.error('Не удалось обновить статус велосипеда: ', updateBikeError.message);
+        // Можно вернуть частичный успех, если это приемлемо
+    }
+
+    return { status: 200, body: { message: 'Приемка оформлена, акт ожидает подписи клиента.' } };
+}
+
+// НОВЫЙ ОБРАБОТЧИК ДЛЯ АДМИН-ПАНЕЛИ
+app.post('/api/admin', async (req, res) => {
+    try {
+        const body = req.body;
+        const { action } = body;
+        let result;
+
+        switch (action) {
+            case 'finalize-return':
+                result = await handleFinalizeReturn(body);
+                break;
+            // Здесь могут быть другие admin-действия в будущем
+            default:
+                result = { status: 400, body: { error: 'Invalid admin action' } };
+        }
+        res.status(result.status).json(result.body);
+    } catch (error) {
+        console.error('Admin handler error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/user', async (req, res) => {
     try {
         const body = req.body;
