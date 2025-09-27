@@ -134,7 +134,19 @@ function generateContractHTML(rentalData) {
     const client = rentalData.clients;
     const bike = rentalData.bikes;
     const now = new Date();
-    const passport = client?.recognized_passport_data || {};
+
+    // --- ИСПРАВЛЕНИЕ: Добавляем парсинг JSON и используем правильные ключи ---
+    let passport = {};
+    if (client?.recognized_passport_data) {
+        try {
+            // Данные могут быть строкой или уже объектом, обработаем оба случая
+            passport = typeof client.recognized_passport_data === 'string'
+                ? JSON.parse(client.recognized_passport_data)
+                : client.recognized_passport_data;
+        } catch (e) {
+            console.error("Server failed to parse passport data:", e);
+        }
+    }
 
     const batteryNumbers = Array.isArray(bike?.battery_numbers)
         ? bike.battery_numbers.join(', ')
@@ -165,11 +177,12 @@ function generateContractHTML(rentalData) {
         <table border="1" style="width:100%; border-collapse: collapse; margin-bottom: 20px; text-align: left; font-size: 0.9em;">
             <tbody style="text-align: left;">
                 <tr><th style="padding: 8px; width: 40%;">ФИО</th><td style="padding: 8px;">${client?.name || 'N/A'}</td></tr>
-                <tr><th style="padding: 8px;">Дата рождения</th><td style="padding: 8px;">${passport['Дата рождения'] || 'N/A'}</td></tr>
-                <tr><th style="padding: 8px;">Паспорт</th><td style="padding: 8px;">${passport['Серия и номер паспорта'] || 'N/A'}</td></tr>
-                <tr><th style="padding: 8px;">Кем выдан</th><td style="padding: 8px;">${passport['Кем выдан'] || 'N/A'}</td></tr>
-                <tr><th style="padding: 8px;">Дата выдачи</th><td style="padding: 8px;">${passport['Дата выдачи'] || 'N/A'}</td></tr>
-                <tr><th style="padding: 8px;">Адрес регистрации</th><td style="padding: 8px;">${passport['Адрес регистрации'] || 'N/A'}</td></tr>
+                {/* --- ИСПРАВЛЕННЫЕ КЛЮЧИ --- */}
+                <tr><th style="padding: 8px;">Дата рождения</th><td style="padding: 8px;">${passport.birth_date || 'N/A'}</td></tr>
+                <tr><th style="padding: 8px;">Паспорт</th><td style="padding: 8px;">${(passport.series || '') + ' ' + (passport.number || '')}</td></tr>
+                <tr><th style="padding: 8px;">Кем выдан</th><td style="padding: 8px;">${passport.issuing_authority || 'N/A'}</td></tr>
+                <tr><th style="padding: 8px;">Дата выдачи</th><td style="padding: 8px;">${passport.issue_date || 'N/A'}</td></tr>
+                <tr><th style="padding: 8px;">Адрес регистрации</th><td style="padding: 8px;">${passport.registration_address || 'N/A'}</td></tr>
             </tbody>
         </table>
 
