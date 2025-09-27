@@ -296,6 +296,19 @@ function generateReturnActHTML(rentalData, defects = [], clientSignatureData = n
     const bike = rentalData.bikes;
     const now = new Date();
 
+    // Пытаемся распарсить паспортные данные из JSON-строки
+    let passport = {};
+    if (client?.recognized_passport_data) {
+        try {
+            // Если это уже объект, используем его. Если строка - парсим.
+            passport = typeof client.recognized_passport_data === 'string'
+                ? JSON.parse(client.recognized_passport_data)
+                : client.recognized_passport_data;
+        } catch (e) {
+            console.error("Failed to parse passport data for return act:", e);
+        }
+    }
+
     const batteryNumbers = Array.isArray(bike?.battery_numbers)
         ? bike.battery_numbers.join(', ')
         : (bike?.battery_numbers || 'N/A');
@@ -316,12 +329,10 @@ function generateReturnActHTML(rentalData, defects = [], clientSignatureData = n
         `
         : '';
 
-    // --- ИСПРАВЛЕННЫЙ БЛОК ПОДПИСИ ---
     const clientSignatureHTML = clientSignatureData
-        ? `<img src="${clientSignatureData}" alt="Подпись" style="width: 150px; height: auto; margin-bottom: -40px;"/>`
+        ? `<img src="${clientSignatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>`
         : '';
 
-    // HTML для тела документа (без шапки)
     const bodyHTML = `
         <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
             Акт приема-передачи (возврата)<br>
@@ -343,28 +354,36 @@ function generateReturnActHTML(rentalData, defects = [], clientSignatureData = n
             </tbody>
         </table>
 
+        <!-- +++ ДОБАВЛЕНА ТАБЛИЦА С ДАННЫМИ АРЕНДАТОРА +++ -->
+        <h4 style="margin-top: 20px; margin-bottom: 10px;">2. Арендатор</h4>
+        <table>
+            <tbody>
+                <tr><th>ФИО</th><td>${client?.name || 'N/A'}</td></tr>
+                <tr><th>Дата рождения</th><td>${passport.birth_date || 'N/A'}</td></tr>
+                <tr><th>Паспорт</th><td>${(passport.series || '') + ' ' + (passport.number || '')}</td></tr>
+                <tr><th>Кем выдан</th><td>${passport.issuing_authority || 'N/A'}</td></tr>
+                <tr><th>Дата выдачи</th><td>${passport.issue_date || 'N/A'}</td></tr>
+                <tr><th>Адрес регистрации</th><td>${passport.registration_address || 'N/A'}</td></tr>
+            </tbody>
+        </table>
+
         ${defectsHTML}
         ${amountHTML}
 
-        <h4 style="margin-top: 40px; margin-bottom: 10px;">Подписи сторон</h4>
-        <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
-            <tr style="vertical-align: bottom;">
-                <td style="width: 50%; padding-right: 20px; border: none;">
-                    <p>Арендатор технику и оборудование передал.</p>
-                    ${clientSignatureHTML}
-                    <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
-                    <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
-                </td>
-                <td style="width: 50%; padding-left: 20px; border: none;">
-                    <p>Арендодатель технику и оборудование получил.</p>
-                    <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
-                    <p style="font-size: 0.8em;">(ФИО: ________________)</p>
-                </td>
-            </tr>
-        </table>
+        <p style="font-size: 0.9em; margin-top: 20px;">Арендатор технику и оборудование передал. Арендодатель технику и оборудование получил. Претензий стороны друг к другу не имеют.</p>
+
+        <!-- +++ ИСПРАВЛЕН БЛОК ПОДПИСИ +++ -->
+        <div style="margin-top: 50px; page-break-inside: avoid; width: 400px;">
+            <div style="position: relative; height: 100px; text-align: left;">
+                ${clientSignatureHTML}
+                <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
+            </div>
+            <div style="text-align: right; font-size: 11px; color: #555;">
+                (Подпись Арендатора)
+            </div>
+        </div>
     `;
 
-    // Оборачиваем в полный HTML с правильными стилями
     return `
         <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
         body { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 1.4; color: #333; }
