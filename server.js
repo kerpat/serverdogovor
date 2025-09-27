@@ -177,7 +177,6 @@ function generateContractHTML(rentalData) {
         <table border="1" style="width:100%; border-collapse: collapse; margin-bottom: 20px; text-align: left; font-size: 0.9em;">
             <tbody style="text-align: left;">
                 <tr><th style="padding: 8px; width: 40%;">ФИО</th><td style="padding: 8px;">${client?.name || 'N/A'}</td></tr>
-                {/* --- ИСПРАВЛЕННЫЕ КЛЮЧИ --- */}
                 <tr><th style="padding: 8px;">Дата рождения</th><td style="padding: 8px;">${passport.birth_date || 'N/A'}</td></tr>
                 <tr><th style="padding: 8px;">Паспорт</th><td style="padding: 8px;">${(passport.series || '') + ' ' + (passport.number || '')}</td></tr>
                 <tr><th style="padding: 8px;">Кем выдан</th><td style="padding: 8px;">${passport.issuing_authority || 'N/A'}</td></tr>
@@ -419,7 +418,8 @@ async function handleGenerateReturnAct({ userId, rentalId }) {
     try {
         const { data: rentalData, error: rentalError } = await supabaseAdmin
             .from('rentals')
-            .select('extra_data, clients ( name, city ), bikes ( * )')
+            // ИЗМЕНЕНИЕ: Добавляем recognized_passport_data в запрос
+            .select('extra_data, clients ( name, city, recognized_passport_data ), bikes ( * )')
             .eq('id', rentalId)
             .eq('user_id', userId)
             .single();
@@ -472,7 +472,8 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
     try {
         const { data: rentalData, error: rentalError } = await supabaseAdmin
             .from('rentals')
-            .select('extra_data, clients ( name, city ), bikes ( * )')
+            // ИЗМЕНЕНИЕ 1: Добавляем bike_id и recognized_passport_data в запрос
+            .select('bike_id, extra_data, clients ( name, city, recognized_passport_data ), bikes ( * )')
             .eq('id', rentalId)
             .eq('user_id', userId)
             .single();
@@ -481,7 +482,7 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
 
         const defects = rentalData.extra_data?.defects || [];
         const amount = rentalData.extra_data?.damage_amount || 0;
-        
+
         const fullHTML = generateReturnActHTML(rentalData, defects, signatureData, amount);
 
         browser = await playwright.chromium.launch();
@@ -519,6 +520,22 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
             .eq('id', rentalId);
 
         if (updateError) throw new Error('Failed to finalize rental after signing return act: ' + updateError.message);
+
+        // ИЗМЕНЕНИЕ 2: Добавляем обновление статуса велосипеда
+        const bikeId = rentalData.bike_id;
+        if (!bikeId) {
+            console.error(`Warning: bike_id not found for rental ${rentalId}. Cannot update bike status.`);
+        } else {
+            const { error: bikeUpdateError } = await supabaseAdmin
+                .from('bikes')
+                .update({ status: 'maintenance' }) // Ставим статус "на обслуживании"
+                .eq('id', bikeId);
+
+            if (bikeUpdateError) {
+                // Не прерываем процесс, но логируем ошибку
+                console.error(`Failed to update bike status for bike_id ${bikeId}: ${bikeUpdateError.message}`);
+            }
+        }
 
         return { status: 200, body: { message: 'Return act signed successfully.' } };
 
