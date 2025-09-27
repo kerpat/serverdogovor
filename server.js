@@ -282,6 +282,123 @@ async function handleGetPaymentMethod({ userId }) {
     return { status: 200, body: { payment_method: paymentMethodDetails } };
 }
 
+function generateReturnActHTML(rentalData, defects = []) {
+    const client = rentalData.clients;
+    const bike = rentalData.bikes;
+    const now = new Date();
+
+    const batteryNumbers = Array.isArray(bike?.battery_numbers)
+        ? bike.battery_numbers.join(', ')
+        : (bike?.battery_numbers || 'N/A');
+
+    const defectsHTML = defects && defects.length > 0
+        ? `
+        <h4 style="margin-top: 20px; margin-bottom: 10px;">3. Выявленные неисправности</h4>
+        <ul style="padding-left: 20px; margin-bottom: 20px; font-size: 0.9em;">
+            ${defects.map(d => `<li>${d}</li>`).join('')}
+        </ul>
+        `
+        : '<p style="font-size: 0.9em; margin-top: 20px;">Неисправности на момент сдачи не выявлены.</p>';
+
+    return `
+        <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
+        body { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 1.4; color: #333; }
+        table { width:100%; border-collapse: collapse; margin-bottom: 20px; text-align: left; font-size: 0.9em; }
+        th, td { border: 1px solid #ccc; padding: 8px; }
+        th { background-color: #f2f2f2; font-weight: bold; width: 40%; }
+        h2, h4 { text-align: center; }
+        </style></head><body>
+            <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
+                Акт приема-передачи<br>
+                (Приложение №2 к Договору проката)
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9em;">
+                <span>г. ${client?.city || 'Москва'}</span>
+                <span>${now.toLocaleDateString('ru-RU')}</span>
+            </div>
+            <h4 style="margin-top: 20px; margin-bottom: 10px;">1. Оборудование</h4>
+            <table>
+                <tbody>
+                    <tr><th>Наименование</th><td>${bike?.model_name || 'N/A'}</td></tr>
+                    <tr><th>Номер рамы</th><td>${bike?.frame_number || 'N/A'}</td></tr>
+                    <tr><th>Номера аккумуляторов</th><td>${batteryNumbers}</td></tr>
+                    <tr><th>Рег. номер</th><td>${bike?.registration_number || 'N/A'}</td></tr>
+                    <tr><th>Номер IOT</th><td>${bike?.iot_device_id || 'N/A'}</td></tr>
+                    <tr><th>Доп. оборудование</th><td>${bike?.additional_equipment || 'N/A'}</td></tr>
+                </tbody>
+            </table>
+            
+            ${defectsHTML}
+
+            <h4 style="margin-top: 40px; margin-bottom: 10px;">2. Подписи сторон</h4>
+            <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
+                <tr style="vertical-align: bottom;">
+                    <td style="width: 50%; padding-right: 20px; border: none;">
+                        <p>Арендатор технику и оборудование передал.</p>
+                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                        <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
+                    </td>
+                    <td style="width: 50%; padding-left: 20px; border: none;">
+                        <p>Арендодатель технику и оборудование получил.</p>
+                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                        <p style="font-size: 0.8em;">(ФИО: ________________)</p>
+                    </td>
+                </tr>
+            </table>
+        </body></html>
+    `;
+}
+
+async function handleGenerateReturnAct({ userId, rentalId, defects }) {
+    if (!userId || !rentalId) {
+        return { status: 400, body: { error: 'userId and rentalId are required.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+    let browser = null;
+
+    try {
+        const { data: rentalData, error: rentalError } = await supabaseAdmin
+            .from('rentals')
+            .select('clients ( name, city ), bikes ( * )')
+            .eq('id', rentalId)
+            .eq('user_id', userId)
+            .single();
+
+        if (rentalError) throw new Error('Failed to fetch rental data for Act: ' + rentalError.message);
+
+        const fullHTML = generateReturnActHTML(rentalData, defects);
+
+        browser = await playwright.chromium.launch();
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.setContent(fullHTML, { waitUntil: 'load' });
+        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+
+        const filePath = `returns/${userId}/return_act_${rentalId}.pdf`;
+        const { error: uploadError } = await supabaseAdmin.storage
+            .from('contracts') // Using the same bucket for now
+            .upload(filePath, pdfBuffer, {
+                contentType: 'application/pdf',
+                upsert: true
+            });
+
+        if (uploadError) throw new Error('Failed to save Return Act PDF: ' + uploadError.message);
+
+        const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
+
+        return { status: 200, body: { message: 'Return Act generated successfully', publicUrl } };
+
+    } catch (error) {
+        console.error('Return Act generation error:', error);
+        return { status: 500, body: { error: 'Не удалось сгенерировать акт сдачи: ' + error.message } };
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+    }
+}
+
 app.post('/api/user', async (req, res) => {
     try {
         const body = req.body;
@@ -309,6 +426,9 @@ app.post('/api/user', async (req, res) => {
                 break;
             case 'get-payment-method':
                 result = await handleGetPaymentMethod(body);
+                break;
+            case 'generate-return-act':
+                result = await handleGenerateReturnAct(body);
                 break;
             default:
                 result = { status: 400, body: { error: 'Invalid action' } };
