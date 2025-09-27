@@ -93,6 +93,7 @@ async function handleGetContractDetails({ userId, rentalId }) {
         .from('rentals')
         .select(`
             id,
+            extra_data,
             clients ( name, city, recognized_passport_data ),
             tariffs ( title ),
             bikes ( model_name, frame_number, battery_numbers, registration_number, iot_device_id, additional_equipment )
@@ -260,6 +261,163 @@ async function handleConfirmContract({ userId, rentalId, signatureData }) {
     }
 }
 
+async function handleGetPaymentMethod({ userId }) {
+    if (!userId) {
+        return { status: 400, body: { error: 'userId is required.' } };
+    }
+    const supabaseAdmin = createSupabaseAdmin();
+    const { data: client, error: clientError } = await supabaseAdmin
+        .from('clients')
+        .select('extra')
+        .eq('id', userId)
+        .single();
+
+    if (clientError) throw new Error('Failed to get client data: ' + clientError.message);
+    
+    const paymentMethodDetails = client?.extra?.payment_method_details;
+
+    if (!paymentMethodDetails) {
+        return { status: 404, body: { error: 'No saved payment method found for this user.' } };
+    }
+
+    return { status: 200, body: { payment_method: paymentMethodDetails } };
+}
+
+function generateReturnActHTML(rentalData, defects = [], clientSignatureData = null, amount = 0) {
+    const client = rentalData.clients;
+    const bike = rentalData.bikes;
+    const now = new Date();
+
+    const batteryNumbers = Array.isArray(bike?.battery_numbers)
+        ? bike.battery_numbers.join(', ')
+        : (bike?.battery_numbers || 'N/A');
+
+    const defectsHTML = defects && defects.length > 0
+        ? `
+        <h4 style="margin-top: 20px; margin-bottom: 10px;">3. Выявленные неисправности</h4>
+        <ul style="padding-left: 20px; margin-bottom: 20px; font-size: 0.9em;">
+            ${defects.map(d => `<li>${d}</li>`).join('')}
+        </ul>
+        `
+        : '<p style="font-size: 0.9em; margin-top: 20px;">Неисправности на момент сдачи не выявлены.</p>';
+
+    const amountHTML = amount > 0
+        ? `
+        <h4 style="margin-top: 20px; margin-bottom: 10px;">4. Возмещение ущерба</h4>
+        <p style="font-size: 0.9em;">Итоговая сумма к оплате за ущерб: <strong>${amount.toFixed(2)} ₽</strong></p>
+        `
+        : '';
+
+    const clientSignatureHTML = clientSignatureData
+        ? `<img src="${clientSignatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>`
+        : '';
+
+    return `
+        <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
+        body { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 1.4; color: #333; }
+        table { width:100%; border-collapse: collapse; margin-bottom: 20px; text-align: left; font-size: 0.9em; }
+        th, td { border: 1px solid #ccc; padding: 8px; }
+        th { background-color: #f2f2f2; font-weight: bold; width: 40%; }
+        h2, h4 { text-align: center; }
+        </style></head><body>
+            <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
+                Акт приема-передачи (возврата)<br>
+                (Приложение №2 к Договору проката)
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9em;">
+                <span>г. ${client?.city || 'Москва'}</span>
+                <span>${now.toLocaleDateString('ru-RU')}</span>
+            </div>
+            <h4 style="margin-top: 20px; margin-bottom: 10px;">1. Оборудование</h4>
+            <table>
+                <tbody>
+                    <tr><th>Наименование</th><td>${bike?.model_name || 'N/A'}</td></tr>
+                    <tr><th>Номер рамы</th><td>${bike?.frame_number || 'N/A'}</td></tr>
+                    <tr><th>Номера аккумуляторов</th><td>${batteryNumbers}</td></tr>
+                    <tr><th>Рег. номер</th><td>${bike?.registration_number || 'N/A'}</td></tr>
+                    <tr><th>Номер IOT</th><td>${bike?.iot_device_id || 'N/A'}</td></tr>
+                    <tr><th>Доп. оборудование</th><td>${bike?.additional_equipment || 'N/A'}</td></tr>
+                </tbody>
+            </table>
+            
+            ${defectsHTML}
+            ${amountHTML}
+
+            <h4 style="margin-top: 40px; margin-bottom: 10px;">Подписи сторон</h4>
+            <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
+                <tr style="vertical-align: bottom;">
+                    <td style="width: 50%; padding-right: 20px; border: none;">
+                        <p>Арендатор технику и оборудование передал.</p>
+                        <div style="position: relative; height: 100px; text-align: left;">
+                            ${clientSignatureHTML}
+                            <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
+                        </div>
+                        <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
+                    </td>
+                    <td style="width: 50%; padding-left: 20px; border: none;">
+                        <p>Арендодатель технику и оборудование получил.</p>
+                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
+                        <p style="font-size: 0.8em;">(ФИО: ________________)</p>
+                    </td>
+                </tr>
+            </table>
+        </body></html>
+    `;
+}
+
+async function handleGenerateReturnAct({ userId, rentalId }) {
+    if (!userId || !rentalId) {
+        return { status: 400, body: { error: 'userId and rentalId are required.' } };
+    }
+
+    const supabaseAdmin = createSupabaseAdmin();
+    let browser = null;
+
+    try {
+        const { data: rentalData, error: rentalError } = await supabaseAdmin
+            .from('rentals')
+            .select('extra_data, clients ( name, city ), bikes ( * )')
+            .eq('id', rentalId)
+            .eq('user_id', userId)
+            .single();
+
+        if (rentalError) throw new Error('Failed to fetch rental data for Act: ' + rentalError.message);
+
+        const defects = rentalData.extra_data?.defects || [];
+        const amount = rentalData.extra_data?.damage_amount || 0;
+
+        const fullHTML = generateReturnActHTML(rentalData, defects, null, amount);
+
+        browser = await playwright.chromium.launch();
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.setContent(fullHTML, { waitUntil: 'load' });
+        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+
+        const filePath = `returns/${userId}/return_act_${rentalId}.pdf`;
+        const { error: uploadError } = await supabaseAdmin.storage
+            .from('contracts')
+            .upload(filePath, pdfBuffer, {
+                contentType: 'application/pdf',
+                upsert: true
+            });
+
+        if (uploadError) throw new Error('Failed to save Return Act PDF: ' + uploadError.message);
+
+        const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
+
+        return { status: 200, body: { message: 'Return Act generated successfully', publicUrl } };
+
+    } catch (error) {
+        console.error('Return Act generation error:', error);
+        return { status: 500, body: { error: 'Не удалось сгенерировать акт сдачи: ' + error.message } };
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+    }
+}
+
 async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
     if (!userId || !rentalId || !signatureData) {
         return { status: 400, body: { error: 'userId, rentalId, and signatureData are required.' } };
@@ -279,8 +437,9 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
         if (rentalError) throw new Error('Failed to fetch rental data for Return Act signing: ' + rentalError.message);
 
         const defects = rentalData.extra_data?.defects || [];
+        const amount = rentalData.extra_data?.damage_amount || 0;
         
-        const fullHTML = generateReturnActHTML(rentalData, defects, signatureData);
+        const fullHTML = generateReturnActHTML(rentalData, defects, signatureData, amount);
 
         browser = await playwright.chromium.launch();
         const context = await browser.newContext();
@@ -317,152 +476,6 @@ async function handleConfirmReturnAct({ userId, rentalId, signatureData }) {
     } catch (error) {
         console.error('Return Act confirmation error:', error);
         return { status: 500, body: { error: 'Не удалось подписать акт сдачи: ' + error.message } };
-    } finally {
-        if (browser) {
-            await browser.close();
-        }
-    }
-}
-
-async function handleGetPaymentMethod({ userId }) {
-    if (!userId) {
-        return { status: 400, body: { error: 'userId is required.' } };
-    }
-    const supabaseAdmin = createSupabaseAdmin();
-    const { data: client, error: clientError } = await supabaseAdmin
-        .from('clients')
-        .select('extra')
-        .eq('id', userId)
-        .single();
-
-    if (clientError) throw new Error('Failed to get client data: ' + clientError.message);
-    
-    const paymentMethodDetails = client?.extra?.payment_method_details;
-
-    if (!paymentMethodDetails) {
-        return { status: 404, body: { error: 'No saved payment method found for this user.' } };
-    }
-
-    return { status: 200, body: { payment_method: paymentMethodDetails } };
-}
-
-function generateReturnActHTML(rentalData, defects = [], clientSignatureData = null) {
-    const client = rentalData.clients;
-    const bike = rentalData.bikes;
-    const now = new Date();
-
-    const batteryNumbers = Array.isArray(bike?.battery_numbers)
-        ? bike.battery_numbers.join(', ')
-        : (bike?.battery_numbers || 'N/A');
-
-    const defectsHTML = defects && defects.length > 0
-        ? `
-        <h4 style="margin-top: 20px; margin-bottom: 10px;">3. Выявленные неисправности</h4>
-        <ul style="padding-left: 20px; margin-bottom: 20px; font-size: 0.9em;">
-            ${defects.map(d => `<li>${d}</li>`).join('')}
-        </ul>
-        `
-        : '<p style="font-size: 0.9em; margin-top: 20px;">Неисправности на момент сдачи не выявлены.</p>';
-    
-    const clientSignatureHTML = clientSignatureData
-        ? `<img src="${clientSignatureData}" alt="Подпись" style="position: absolute; left: 0; bottom: 15px; width: 180px; height: auto; z-index: 10;"/>`
-        : '';
-
-    return `
-        <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><style>
-        body { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; line-height: 1.4; color: #333; }
-        table { width:100%; border-collapse: collapse; margin-bottom: 20px; text-align: left; font-size: 0.9em; }
-        th, td { border: 1px solid #ccc; padding: 8px; }
-        th { background-color: #f2f2f2; font-weight: bold; width: 40%; }
-        h2, h4 { text-align: center; }
-        </style></head><body>
-            <div style="text-align: center; font-weight: bold; font-size: 1.2em; margin-bottom: 20px;">
-                Акт приема-передачи<br>
-                (Приложение №2 к Договору проката)
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9em;">
-                <span>г. ${client?.city || 'Москва'}</span>
-                <span>${now.toLocaleDateString('ru-RU')}</span>
-            </div>
-            <h4 style="margin-top: 20px; margin-bottom: 10px;">1. Оборудование</h4>
-            <table>
-                <tbody>
-                    <tr><th>Наименование</th><td>${bike?.model_name || 'N/A'}</td></tr>
-                    <tr><th>Номер рамы</th><td>${bike?.frame_number || 'N/A'}</td></tr>
-                    <tr><th>Номера аккумуляторов</th><td>${batteryNumbers}</td></tr>
-                    <tr><th>Рег. номер</th><td>${bike?.registration_number || 'N/A'}</td></tr>
-                    <tr><th>Номер IOT</th><td>${bike?.iot_device_id || 'N/A'}</td></tr>
-                    <tr><th>Доп. оборудование</th><td>${bike?.additional_equipment || 'N/A'}</td></tr>
-                </tbody>
-            </table>
-            
-            ${defectsHTML}
-
-            <h4 style="margin-top: 40px; margin-bottom: 10px;">2. Подписи сторон</h4>
-            <table style="width:100%; border: none; margin-top: 30px; font-size: 0.9em;">
-                <tr style="vertical-align: bottom;">
-                    <td style="width: 50%; padding-right: 20px; border: none;">
-                        <p>Арендатор технику и оборудование передал.</p>
-                        <div style="position: relative; height: 100px; text-align: left;">
-                            ${clientSignatureHTML}
-                            <div style="position: absolute; left: 0; bottom: 10px; width: 100%; border-bottom: 1px solid #333;"></div>
-                        </div>
-                        <p style="font-size: 0.8em;">(ФИО: ${client?.name || '________________'})</p>
-                    </td>
-                    <td style="width: 50%; padding-left: 20px; border: none;">
-                        <p>Арендодатель технику и оборудование получил.</p>
-                        <div style="margin-top: 60px; border-bottom: 1px solid #333;"></div>
-                        <p style="font-size: 0.8em;">(ФИО: ________________)</p>
-                    </td>
-                </tr>
-            </table>
-        </body></html>
-    `;
-}
-
-async function handleGenerateReturnAct({ userId, rentalId, defects }) {
-    if (!userId || !rentalId) {
-        return { status: 400, body: { error: 'userId and rentalId are required.' } };
-    }
-
-    const supabaseAdmin = createSupabaseAdmin();
-    let browser = null;
-
-    try {
-        const { data: rentalData, error: rentalError } = await supabaseAdmin
-            .from('rentals')
-            .select('clients ( name, city ), bikes ( * )')
-            .eq('id', rentalId)
-            .eq('user_id', userId)
-            .single();
-
-        if (rentalError) throw new Error('Failed to fetch rental data for Act: ' + rentalError.message);
-
-        const fullHTML = generateReturnActHTML(rentalData, defects);
-
-        browser = await playwright.chromium.launch();
-        const context = await browser.newContext();
-        const page = await context.newPage();
-        await page.setContent(fullHTML, { waitUntil: 'load' });
-        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-
-        const filePath = `returns/${userId}/return_act_${rentalId}.pdf`;
-        const { error: uploadError } = await supabaseAdmin.storage
-            .from('contracts') // Using the same bucket for now
-            .upload(filePath, pdfBuffer, {
-                contentType: 'application/pdf',
-                upsert: true
-            });
-
-        if (uploadError) throw new Error('Failed to save Return Act PDF: ' + uploadError.message);
-
-        const { data: { publicUrl } } = supabaseAdmin.storage.from('contracts').getPublicUrl(filePath);
-
-        return { status: 200, body: { message: 'Return Act generated successfully', publicUrl } };
-
-    } catch (error) {
-        console.error('Return Act generation error:', error);
-        return { status: 500, body: { error: 'Не удалось сгенерировать акт сдачи: ' + error.message } };
     } finally {
         if (browser) {
             await browser.close();
