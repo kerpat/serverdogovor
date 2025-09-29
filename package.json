@@ -1,7 +1,7 @@
 {
-  "name": "prizmatic-server",
+  "name": "bikepark54-server",
   "version": "1.0.0",
-  "description": "Backend server for Prizmatic App",
+  "description": "Backend server for BikePark54 App",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
