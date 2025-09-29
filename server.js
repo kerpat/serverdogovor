@@ -757,12 +757,13 @@ app.post('/api/admin', async (req, res) => {
             case 'finalize-return':
                 result = await handleFinalizeReturn(body);
                 break;
-            // Здесь могут быть другие admin-действия в будущем
-            default:
             case 'set-verification-status':
                 result = await handleSetVerificationStatus(body);
                 break;
+            // Здесь могут быть другие admin-действия в будущем
+            default:
                 result = { status: 400, body: { error: 'Invalid admin action' } };
+                break;
         }
         res.status(result.status).json(result.body);
     } catch (error) {
